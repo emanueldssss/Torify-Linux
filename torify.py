@@ -10,7 +10,7 @@ Uso:
     python3 torify.py --tor        # Inicia Tor e mostra IP
 """
 
-import os, sys, subprocess, shutil, time, json, textwrap, glob, signal
+import os, sys, subprocess, shutil, time, json, textwrap, glob, signal, platform
 from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────
@@ -33,6 +33,20 @@ RESET  = "\033[0m"
 BOLD   = "\033[1m"
 
 tor_proc: subprocess.Popen | None = None
+
+
+# ── Platform check ─────────────────────────────────────────────────────
+def check_platform():
+    """Ensure we're running on Linux/WSL."""
+    if platform.system() == "Windows":
+        c("Este script deve ser executado no Linux ou WSL!", color=RED)
+        c("No Windows, use o WSL:", color=YELLOW)
+        c("  wsl.exe -d Ubuntu-24.04 python3 torify.py", color=GRAY)
+        sys.exit(1)
+    if platform.system() != "Linux":
+        c(f"Sistema não suportado: {platform.system()}", color=RED)
+        c("Use Linux ou WSL.", color=YELLOW)
+        sys.exit(1)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -178,7 +192,7 @@ def ensure_tor() -> str | None:
     try:
         import urllib.request, tarfile
         arch_map = {"x86_64": "x86_64", "i686": "i686", "aarch64": "aarch64"}
-        arch = arch_map.get(os.uname().machine, "x86_64")
+        arch = arch_map.get(platform.machine(), "x86_64")
         url = f"https://www.torproject.org/dist/torbrowser/15.0.18/tor-expert-bundle-linux-{arch}-15.0.18.tar.gz"
         dest = BASE_DIR / "tor-dl.tar.gz"
         urllib.request.urlretrieve(url, dest)
@@ -568,6 +582,8 @@ def cli_tor():
 
 # ── Main ───────────────────────────────────────────────────────────────
 def main():
+    check_platform()
+
     # CLI argumentos
     if len(sys.argv) > 1:
         arg = sys.argv[1]
