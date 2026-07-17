@@ -274,6 +274,18 @@ def start_tor():
     if tor_proc and tor_proc.poll() is None:
         return True
 
+    # Check if Tor is already running (systemd or manual)
+    import socket as _sock
+    s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    try:
+        s.settimeout(2)
+        s.connect(("127.0.0.1", 9050))
+        s.close()
+        ok("Tor já está rodando (porta 9050)")
+        return True
+    except:
+        pass
+
     tor_bin = ensure_tor()
     if not tor_bin:
         err("Tor não disponível. Impossível continuar.")
