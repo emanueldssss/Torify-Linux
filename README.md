@@ -9,6 +9,7 @@ Roteie qualquer aplicativo Linux pelo Tor com um clique.
 - **Tor** — daemon rodando na porta SOCKS5 `127.0.0.1:9050`
 - **Proxychains-ng** — hook via `LD_PRELOAD` que redireciona o tráfego do app pelo Tor
 - **Menu interativo** — controle tudo pelo terminal
+- **CLI** — comandos diretos sem menu
 
 ## Instalação rápida
 
@@ -16,17 +17,31 @@ Roteie qualquer aplicativo Linux pelo Tor com um clique.
 git clone https://github.com/emanueldssss/Torify-Linux.git
 cd Torify-Linux
 chmod +x torify.py
-./torify.py
+
+# Instala TUDO (python3, tor, proxychains, curl, wget, etc)
+python3 torify.py --install
+
+# Ou apenas roda — instala automático na primeira execução
+python3 torify.py
 ```
 
-Na primeira execução, o script:
-1. Verifica se `tor` e `proxychains4` estão instalados
-2. Se não estiverem, baixa o **Tor Expert Bundle** automaticamente (sem precisar de sudo)
-3. Se o proxychains não estiver instalado, tenta instalar via `apt`/`dnf`/`pacman` (pode pedir sudo)
-4. Cria os arquivos de configuração em `~/.config/torify/`
+Na primeira execução, o script instala **todas as dependências** automaticamente:
+1. **Python 3** (se não estiver instalado)
+2. **Tor** — via pacote da distro ou Expert Bundle
+3. **Proxychains-ng** — via pacote da distro
+4. **curl/wget** — para verificação de IP
+5. **zenity/xterm** — para interface opcional
 
-> **Alternativa**: instale manualmente com `sudo apt install tor proxychains4` (Debian/Ubuntu)  
-> Depois só rode `./torify.py` — o setup detecta que os pacotes já existem e pula a instalação.
+> Nada de `sudo apt install` manual. O script faz tudo sozinho.
+
+## CLI (command line)
+
+```bash
+python3 torify.py --install    # Instala todas as dependências e sai
+python3 torify.py --tor        # Inicia Tor e mostra o IP
+python3 torify.py --help       # Mostra ajuda
+python3 torify.py              # Modo interativo (menu)
+```
 
 ## Menu
 
@@ -82,13 +97,15 @@ Lista todos os apps salvos. Escolha um número e o script:
 
 ## Dependências
 
-### Essenciais (instaladas automaticamente)
-- **Tor** — baixado como Expert Bundle (tarball) do torproject.org
-- **Proxychains-ng** — instalado via pacote da distribuição (apt/dnf/pacman)
+### Gerenciamento automático
+O script instala **todas as dependências** sozinho:
+- `python3` — intérprete
+- `tor` — daemon de anonimização
+- `proxychains4` / `proxychains-ng` — redirecionamento de tráfego
+- `curl` / `wget` — verificação de IP
+- `zenity` / `xterm` — interface opcional
 
-### Opcionais
-- **zenity** ou **kdialog** — para o seletor de arquivos na opção 4
-- **curl** ou **wget** — para verificar IP (geralmente já vem instalado)
+Use `python3 torify.py --install` para instalar tudo de uma vez.
 
 ## Estrutura de arquivos
 
@@ -105,24 +122,25 @@ Lista todos os apps salvos. Escolha um número e o script:
 ## Exemplo de uso
 
 ```bash
-# 1. Rode o script
-./torify.py
+# 1. Instalar dependências
+python3 torify.py --install
 
-# 2. Na primeira vez, ele baixa as dependências automaticamente
+# 2. Rodar modo interativo
+python3 torify.py
 
 # 3. Adicione um app (opção 4) — selecione o Discord, Firefox, etc.
 
 # 4. Abra o app com Tor (opção 5) — escolha o número do app
 ```
 
-## Compativel com
+## Compatível com
 
 - **Debian/Ubuntu** — `apt`
 - **Fedora/CentOS** — `dnf`
 - **Arch Linux** — `pacman`
 - **openSUSE** — `zypper`
 - **Alpine** — `apk`
-- Qualquer distro com Python 3.6+ e `bash`
+- Qualquer distro com Python 3.6+
 
 ## Licença
 

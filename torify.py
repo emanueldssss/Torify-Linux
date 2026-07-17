@@ -2,6 +2,12 @@
 """
 Torify — Linux
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
+Auto-instala tudo na primeira execução.
+
+Uso:
+    python3 torify.py              # Modo interativo
+    python3 torify.py --install    # Apenas instala dependências
+    python3 torify.py --tor        # Inicia Tor e mostra IP
 """
 
 import os, sys, subprocess, shutil, time, json, textwrap, glob, signal
@@ -37,31 +43,110 @@ def c(*args, color="", bold=False, sep=" "):
     print(text)
 
 def err(msg): c(f"[!] {msg}", color=RED)
-
 def ok(msg):  c(f"[+] {msg}", color=GREEN)
-
 def info(msg): c(f"[*] {msg}", color=CYAN)
 
 
-# ── Setup ──────────────────────────────────────────────────────────────
+# ── Full system dependencies ───────────────────────────────────────────
+ALL_DEPS = {
+    "debian": {
+        "pkgs": ["python3", "tor", "proxychains4", "curl", "wget", "zenity", "xterm"],
+        "update": ["apt-get", "update"],
+    },
+    "fedora": {
+        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "update": ["dnf", "check-update"],
+    },
+    "arch": {
+        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "update": ["pacman", "-Sy"],
+    },
+    "suse": {
+        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "update": ["zypper", "refresh"],
+    },
+    "alpine": {
+        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "update": ["apk", "update"],
+    },
+}
+
+def install_all_deps(cmdline: bool = False) -> bool:
+    """Install ALL system dependencies from scratch."""
+    distro = detect_distro()
+    deps = ALL_DEPS.get(distro)
+    if not deps:
+        err(f"Distro '{distro}' não suportada para instalação automática.")
+        c("  Instale manualmente: python3 tor proxychains4 curl wget", color=YELLOW)
+        return False
+
+    pkgs = deps["pkgs"]
+    missing = [p for p in pkgs if not shutil.which(p) and not p.startswith("python")]
+
+    # Always ensure python3 is installed (check via python3 --version)
+    try:
+        subprocess.run(["python3", "--version"], capture_output=True)
+    except:
+        missing.insert(0, "python3")
+
+    if cmdline:
+        c(f"\n  [*] Instalando dependências para {distro}...", color=CYAN)
+        c(f"  [*] Pacotes: {', '.join(pkgs)}\n", color=GRAY)
+
+    if not missing:
+        if cmdline:
+            ok("Todas as dependências já estão instaladas!")
+        return True
+
+    if cmdline:
+        c(f"  [*] Instalando: {', '.join(missing)}\n", color=YELLOW)
+
+    # Update package lists first
+    update_cmd = deps["update"]
+    run_as_root(update_cmd)
+
+    # Install
+    success = install_pkgs(missing)
+    if success:
+        if cmdline:
+            ok("Todas as dependências instaladas!")
+        return True
+    else:
+        err(f"Falha ao instalar: {', '.join(missing)}")
+        if cmdline:
+            c("  Tente manualmente:", color=YELLOW)
+            c(f"  sudo apt install {' '.join(missing)}", color=GRAY)
+        return False
+
+
+# ── Auto-install ───────────────────────────────────────────────────────
 def detect_distro() -> str:
-    """Detect package-manager family."""
     if shutil.which("apt-get"):  return "debian"
     if shutil.which("dnf"):      return "fedora"
-    if shutil.which("yum"):      return "fedora"
     if shutil.which("pacman"):   return "arch"
     if shutil.which("zypper"):   return "suse"
     if shutil.which("apk"):      return "alpine"
     return "unknown"
 
-def install_pkg(pkg: str) -> bool:
-    """Install a system package using the detected package manager."""
-    distro = detect_distro()
+def run_as_root(cmd: list[str]) -> bool:
+    """Run a command as root (sudo if available, else direct)."""
+    if os.geteuid() == 0:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            return True
+        except:
+            return False
     sudo = shutil.which("sudo")
-    if not sudo:
-        err("sudo não encontrado. Instale manualmente ou execute como root.")
-        return False
+    if sudo:
+        try:
+            subprocess.run([sudo, *cmd], check=True, capture_output=True)
+            return True
+        except:
+            return False
+    return False
 
+def install_pkgs(pkgs: list[str]) -> bool:
+    distro = detect_distro()
     cmds = {
         "debian": ["apt-get", "install", "-y"],
         "fedora": ["dnf", "install", "-y"],
@@ -69,42 +154,71 @@ def install_pkg(pkg: str) -> bool:
         "suse":   ["zypper", "install", "-y"],
         "alpine": ["apk", "add"],
     }
-    cmd = cmds.get(distro)
-    if not cmd:
-        err(f"Distro não reconhecida ({distro}). Instale '{pkg}' manualmente.")
+    base = cmds.get(distro)
+    if not base:
+        err(f"Distro '{distro}' não suportada. Instale manualmente: {', '.join(pkgs)}")
         return False
+    return run_as_root([*base, *pkgs])
 
+def ensure_tor() -> str | None:
+    """Ensure tor binary is available, auto-install if needed."""
+    tor_bin = shutil.which("tor")
+    if tor_bin:
+        return tor_bin
+
+    info("Tor não encontrado. Instalando...")
+    if install_pkgs(["tor"]):
+        tor_bin = shutil.which("tor")
+        if tor_bin:
+            ok("Tor instalado!")
+            return tor_bin
+
+    # fallback: download expert bundle
+    err("Instalação via pacote falhou. Baixando Expert Bundle...")
     try:
-        subprocess.run([sudo, *cmd, pkg], check=True)
-        return True
-    except subprocess.CalledProcessError:
-        return False
+        import urllib.request, tarfile
+        arch_map = {"x86_64": "x86_64", "i686": "i686", "aarch64": "aarch64"}
+        arch = arch_map.get(os.uname().machine, "x86_64")
+        url = f"https://www.torproject.org/dist/torbrowser/15.0.18/tor-expert-bundle-linux-{arch}-15.0.18.tar.gz"
+        dest = BASE_DIR / "tor-dl.tar.gz"
+        urllib.request.urlretrieve(url, dest)
+        with tarfile.open(dest) as tf:
+            tf.extractall(path=TOR_DIR)
+        dest.unlink()
+        tor_bin = next(TOR_DIR.rglob("tor"), None)
+        if tor_bin:
+            tor_bin.chmod(0o755)
+            ok(f"Tor baixado: {tor_bin}")
+            return str(tor_bin)
+    except Exception as e:
+        err(f"Falha no download: {e}")
+    return None
 
-def check_tool(name: str, pkg: str = None) -> str | None:
-    """Find a binary; optionally install it via package manager."""
-    path = shutil.which(name)
-    if path:
-        return path
-    c(f"  [!] '{name}' não encontrado.", color=YELLOW)
-    if pkg:
-        c(f"  [*] Tentando instalar '{pkg}' via pacote...", color=CYAN)
-        if install_pkg(pkg) and (path := shutil.which(name)):
-            return path
+def ensure_proxychains() -> str | None:
+    """Ensure proxychains is available, auto-install if needed."""
+    for name in ["proxychains4", "proxychains"]:
+        p = shutil.which(name)
+        if p:
+            return p
+
+    info("Proxychains não encontrado. Instalando...")
+    if install_pkgs(["proxychains4", "proxychains-ng", "proxychains"]):
+        for name in ["proxychains4", "proxychains"]:
+            p = shutil.which(name)
+            if p:
+                ok(f"Proxychains instalado: {p}")
+                return p
+    err("Proxychains não disponível.")
     return None
 
 def write_configs():
-    """Write Tor and proxychains config files."""
     BASE_DIR.mkdir(parents=True, exist_ok=True)
-
-    # torrc
     TORRC.write_text(textwrap.dedent("""\
         SocksPort 9050
         ControlPort 9051
         CookieAuthentication 0
         Log notice file /dev/null
     """).lstrip())
-
-    # proxychains.conf
     PROXYCONF.write_text(textwrap.dedent("""\
         strict_chain
         proxy_dns
@@ -113,109 +227,46 @@ def write_configs():
         [ProxyList]
         socks5 127.0.0.1 9050
     """).lstrip())
-
     ok("Configurações criadas em ~/.config/torify/")
 
-def download_tor_expert() -> Path | None:
-    """Download Tor Expert Bundle for Linux and return path to binary."""
-    import urllib.request, tarfile
+def auto_setup():
+    """Auto-install everything on first run."""
+    c("\n  ========================", color=MAGENTA, bold=True)
+    c("    Primeira Execução", color=MAGENTA, bold=True)
+    c("  ========================\n", color=MAGENTA, bold=True)
 
-    arch_map = {"x86_64": "x86_64", "i686": "i686", "aarch64": "aarch64"}
-    arch = arch_map.get(os.uname().machine, "x86_64")
-    url = (f"https://www.torproject.org/dist/torbrowser/"
-           f"15.0.18/tor-expert-bundle-linux-{arch}-15.0.18.tar.gz")
+    info("Verificando dependências do sistema...\n")
+    install_all_deps(cmdline=False)
 
-    dest = BASE_DIR / "tor-dl.tar.gz"
-    info(f"Baixando Tor Expert Bundle ({arch})...")
+    info("Verificando Tor...\n")
+    tor_path = ensure_tor()
 
-    try:
-        urllib.request.urlretrieve(url, dest)
-    except Exception as e:
-        err(f"Falha no download: {e}")
-        return None
+    info("Verificando Proxychains...\n")
+    px_path = ensure_proxychains()
 
-    info("Extraindo...")
-    tarball = BASE_DIR / "tor"
-    tarball.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(dest) as tf:
-        tf.extractall(path=tarball)
-    dest.unlink()
-
-    # find tor binary
-    tor_bin = next(tarball.rglob("tor"), None)
-    if tor_bin and tor_bin.is_file():
-        tor_bin.chmod(0o755)
-        ok(f"Tor baixado: {tor_bin}")
-        return tor_bin
-    err("Binário do Tor não encontrado após extração.")
-    return None
-
-def run_setup():
-    """First-run setup – install dependencies."""
-    c("", color=MAGENTA)
-    c("  ========================", bold=True)
-    c("    Primeira Execução", bold=True)
-    c("  ========================", bold=True)
-    c("")
-    c("  Verificando dependências...\n", color=CYAN)
-
-    # ── Tor ──
-    tor_path = shutil.which("tor")
-    if not tor_path:
-        c("  [1/2] Tor não encontrado. Tentando baixar Expert Bundle...", color=YELLOW)
-        tor_path = download_tor_expert()
-        if not tor_path:
-            c("  [*] Tentando instalar via pacote (pode pedir sudo)...", color=CYAN)
-            if install_pkg("tor"):
-                tor_path = shutil.which("tor")
-    if tor_path:
-        ok(f"Tor: {tor_path}")
-    else:
-        err("Tor não disponível. Instale manualmente: apt install tor")
-        c("  [!] Opções 1 e 2 não funcionarão sem Tor.", color=YELLOW)
-
-    # ── Proxychains ──
-    px_names = ["proxychains4", "proxychains"]
-    px_path = None
-    for n in px_names:
-        px_path = shutil.which(n)
-        if px_path: break
-
-    if not px_path:
-        c("  [2/2] Proxychains não encontrado. Tentando instalar...", color=YELLOW)
-        if install_pkg("proxychains4") or install_pkg("proxychains-ng"):
-            for n in px_names:
-                px_path = shutil.which(n)
-                if px_path: break
-    if px_path:
-        ok(f"Proxychains: {px_path}")
-    else:
-        c("  [!] Proxychains não disponível. Opção 5 não funcionará.", color=YELLOW)
-        c("      Instale manualmente: sudo apt install proxychains4", color=GRAY)
-
-    # ── Configs ──
     write_configs()
     MARKER.write_text("setup complete")
-    ok("Setup concluído!")
+
+    if tor_path:
+        ok("Tor pronto!")
+    if px_path:
+        ok("Proxychains pronto!")
     c("")
 
 
 # ── Tor management ─────────────────────────────────────────────────────
 def start_tor():
-    """Start Tor daemon with our config."""
     global tor_proc
-
     if tor_proc and tor_proc.poll() is None:
-        return  # already running
+        return True
 
-    tor_bin = shutil.which("tor")
+    tor_bin = ensure_tor()
     if not tor_bin:
-        # try expert bundle
-        tor_bin = next((TOR_DIR.rglob("tor")), None)
-        if not tor_bin:
-            err("Tor não encontrado. Rode o setup primeiro (opção 3).")
-            return False
-        tor_bin = str(tor_bin)
+        err("Tor não disponível. Impossível continuar.")
+        return False
+
+    if not TORRC.exists():
+        write_configs()
 
     info("Iniciando Tor...")
     try:
@@ -235,7 +286,6 @@ def start_tor():
         return False
 
 def send_newnym():
-    """Send NEWNYM signal to Tor control port."""
     try:
         import socket
         s = socket.create_connection(("127.0.0.1", 9051), timeout=5)
@@ -250,7 +300,6 @@ def send_newnym():
         return False
 
 def get_ip(url="https://api.ipify.org") -> str:
-    """Fetch public IP via curl or wget."""
     for cmd in [["curl", "-s", "--max-time", "5"],
                 ["wget", "-qO-", "--timeout=5"]]:
         try:
@@ -286,7 +335,6 @@ def save_apps(apps: list[dict]):
     APPS_FILE.write_text("\n".join(f"{a['name']}|{a['path']}" for a in apps) + "\n")
 
 def find_target_app() -> str | None:
-    """Auto-detect a common app to proxy."""
     candidates = [
         "discord", "telegram-desktop", "signal-desktop", "firefox",
         "chromium", "google-chrome", "chromium-browser", "slack",
@@ -299,15 +347,11 @@ def find_target_app() -> str | None:
     return None
 
 def add_app_interactive():
-    """Add an app via file dialog or manual entry."""
     apps = load_apps()
-
     c("\n  Como adicionar o app?", color=CYAN)
     c("  1) Selecionar com janela (zenity/kdialog)")
     c("  2) Digitar o caminho manualmente")
-    c("  0) Voltar")
-    c("")
-
+    c("  0) Voltar\n")
     choice = input("  > ").strip()
 
     path = None
@@ -360,8 +404,7 @@ def draw_menu():
     c("      Seleciona um .exe/.AppImage/bin\n")
     c("  [5] Abrir App com Tor", color=CYAN)
     c("      Lista apps salvos e abre com proxychains\n")
-    c("  [0] Sair", color=CYAN)
-    c("")
+    c("  [0] Sair\n")
     return input("  > ").strip()
 
 
@@ -370,6 +413,7 @@ def option_torify():
     logo()
     info("Iniciando Torify...\n")
     if not start_tor():
+        input("  Pressione Enter para continuar...")
         return
     info("Rotacionando IP...")
     send_newnym()
@@ -378,7 +422,6 @@ def option_torify():
 
     real = get_ip()
     info(f"IP real (sem Tor): {real}")
-
     tor_ip = get_ip()
     c(f"IP pelo Tor:        {tor_ip}", color=GREEN)
 
@@ -393,7 +436,6 @@ def option_check_ip():
     info("Verificando IPs...\n")
     real = get_ip()
     info(f"IP real (sem Tor): {real}")
-
     tor_ip = get_ip()
     c(f"IP pelo Tor:        {tor_ip}", color=GREEN)
 
@@ -410,18 +452,15 @@ def option_config():
     apps = load_apps()
     auto = find_target_app()
     c("  Configuração do app padrão\n", color=CYAN)
-
     if auto:
         c(f"  Detectado automaticamente: {auto}", color=GRAY)
     elif apps:
         c(f"  Último app configurado: {apps[-1]['path']}", color=GRAY)
     else:
         c("  Nenhum caminho configurado.", color=GRAY)
-
-    c("")
     c("  Digite o caminho completo do executável")
-    c("  (Enter para manter, 'auto' para detectar, 'reset' para limpar):", color=GRAY)
-    path = input("\n  > ").strip()
+    c("  (Enter para manter, 'auto' para detectar, 'reset' para limpar):\n", color=GRAY)
+    path = input("  > ").strip()
 
     if path == "":
         return
@@ -445,11 +484,9 @@ def option_config():
     c("")
 
 def option_launch_app():
-    """List saved apps and launch one with proxychains."""
     apps = load_apps()
     if not apps:
         err("Nenhum app configurado. Use a opção 4 primeiro.")
-        c("")
         return
 
     logo()
@@ -458,9 +495,7 @@ def option_launch_app():
         c(f"  [{i}] {app['name']}", color=GREEN)
         c(f"      {app['path']}", color=GRAY)
 
-    c("")
-    c("  [0] Voltar", color=GRAY)
-    c("")
+    c("\n  [0] Voltar\n", color=GRAY)
     choice = input("  > ").strip()
     if choice == "0" or choice == "":
         return
@@ -504,17 +539,65 @@ def option_launch_app():
 def option_add_app():
     logo()
     add_app_interactive()
-    c("")
+
+
+# ── CLI ────────────────────────────────────────────────────────────────
+def cli_install():
+    """Install all dependencies and exit."""
+    c("\n  ========================", color=MAGENTA, bold=True)
+    c("    Instalação completa", color=MAGENTA, bold=True)
+    c("  ========================\n", color=MAGENTA, bold=True)
+    ok = install_all_deps(cmdline=True)
+    sys.exit(0 if ok else 1)
+
+def cli_tor():
+    """Start Tor, show IP, and exit."""
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    if not MARKER.exists():
+        auto_setup()
+    if start_tor():
+        send_newnym()
+        time.sleep(2)
+        real = get_ip()
+        tor_ip = get_ip()
+        info(f"IP real: {real}")
+        info(f"IP Tor:  {tor_ip}")
+        sys.exit(0)
+    sys.exit(1)
 
 
 # ── Main ───────────────────────────────────────────────────────────────
 def main():
+    # CLI argumentos
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg in ("--install", "-i"):
+            cli_install()
+        elif arg in ("--tor", "-t"):
+            cli_tor()
+        elif arg in ("--help", "-h"):
+            c("""Uso: python3 torify.py [OPÇÃO]
+
+Opções:
+  --install, -i    Instala todas as dependências do sistema
+  --tor, -t        Inicia Tor e mostra o IP
+  --help, -h       Mostra esta ajuda
+
+Sem argumentos: modo interativo
+""")
+            sys.exit(0)
+        else:
+            err(f"Argumento desconhecido: {arg}")
+            c("Use --help para ajuda.", color=YELLOW)
+            sys.exit(1)
+
     BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Auto-setup na primeira execução
     if not MARKER.exists():
-        run_setup()
+        auto_setup()
         if not MARKER.exists():
-            err("Setup incompleto. Verifique as mensagens acima.")
+            err("Setup incompleto.")
             sys.exit(1)
 
     while True:
