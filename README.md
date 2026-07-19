@@ -173,6 +173,20 @@ chmod +x torify
 # [0] Sair
 ```
 
+### ⚠️ Entendendo os IPs do Tor
+
+É **normal** o IP do Tor mudar toda hora. A rede Tor tem milhares de nós de saída espalhados pelo mundo. Cada requisição sua pode sair por um nó diferente:
+
+```
+[1] Rodar Torify → IP Tor: 23.191.200.5
+[2] Conferir IP  → IP Tor: 104.244.73.43
+[2] de novo      → IP Tor: 171.25.193.38
+```
+
+todos são IPs **válidos da rede Tor**. Se aparecesse o **mesmo** IP sempre, aí seria preocupante — significaria que o tráfego **não** está passando pelo Tor de verdade.
+
+O que importa é: **IP real ≠ IP do Tor**. Se são diferentes, o Torify está funcionando.
+
 ### Opções detalhadas
 
 #### [1] Rodar Torify
