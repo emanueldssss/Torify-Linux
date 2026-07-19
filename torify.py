@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Torify v1.1 — Linux
+Torify v1.0 — Linux
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 Auto-instala tudo na primeira execução.
 
@@ -483,7 +483,7 @@ def logo():
     os.system("clear || cls")
     c("")
     c("  ========================", color=MAGENTA, bold=True)
-    c("    Torify v1.1 — Linux", color=MAGENTA, bold=True)
+    c("    Torify v1.0 — Linux", color=MAGENTA, bold=True)
     c("  ========================", color=MAGENTA, bold=True)
     c("  Tor + torsocks for Linux", color=GRAY)
     c("  ========================", color=MAGENTA, bold=True)

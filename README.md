@@ -1,4 +1,4 @@
-# Torify v1.1 — Linux
+# Torify v1.0 — Linux
 
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 
@@ -39,7 +39,7 @@ Baixe o executável compilado da [página de releases](https://github.com/emanue
 
 ```bash
 # 1. Baixa o binário
-wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.1.0/torify-linux-x86_64 -O torify
+wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.0.0/torify-linux-x86_64 -O torify
 
 # 2. Dá permissão de execução
 chmod +x torify
@@ -102,7 +102,7 @@ Na primeira execução, o Torify faz tudo automático:
 
 ```
   ========================
-    Torify v1.1 — Linux
+    Torify v1.0 — Linux
   ========================
   Tor + torsocks for Linux
   ========================
@@ -135,7 +135,7 @@ Na primeira execução, o Torify faz tudo automático:
 
 ```bash
 # Instala
-wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.1.0/torify-linux-x86_64 -O torify
+wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.0.0/torify-linux-x86_64 -O torify
 chmod +x torify
 ./torify --install
 
