@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Torify v1.0 — Linux
+Torify v1.1 — Linux
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 Auto-instala tudo na primeira execução.
 
@@ -24,6 +24,10 @@ TORSOCKS_CONF = BASE_DIR / "torsocks.conf"
 MARKER    = BASE_DIR / ".setup-complete"
 VENV_DIR  = BASE_DIR / "venv"
 
+# Ports — usamos portas alternativas para não conflitar com Tor do sistema
+SOCKS_PORT = 9052
+CTRL_PORT  = 9053
+
 # ── Colours ────────────────────────────────────────────────────────────
 RED    = "\033[91m"
 GREEN  = "\033[92m"
@@ -35,6 +39,7 @@ RESET  = "\033[0m"
 BOLD   = "\033[1m"
 
 tor_proc: subprocess.Popen | None = None
+tor_started_by_us: bool = False  # Track if WE started Tor (vs system)
 
 
 # ── Platform check ─────────────────────────────────────────────────────
@@ -227,17 +232,17 @@ def ensure_torsocks() -> str | None:
 
 def write_configs():
     BASE_DIR.mkdir(parents=True, exist_ok=True)
-    TORRC.write_text(textwrap.dedent("""\
-        SocksPort 9050
-        ControlPort 9051
+    TORRC.write_text(textwrap.dedent(f"""\
+        SocksPort {SOCKS_PORT}
+        ControlPort {CTRL_PORT}
         CookieAuthentication 0
         Log notice file /dev/null
     """).lstrip())
-    # torsocks.conf — explícito para garantir que aponta pra porta certa
-    TORSOCKS_CONF.write_text(textwrap.dedent("""\
+    # torsocks.conf — aponta pro Tor do Torify (porta alternativa)
+    TORSOCKS_CONF.write_text(textwrap.dedent(f"""\
         # torsocks.conf — gerado pelo Torify
         TorAddress 127.0.0.1
-        TorPort 9050
+        TorPort {SOCKS_PORT}
         OnionAddrRange 127.42.42.0/24
         AllowOutboundLocalhost 1
     """).lstrip())
@@ -269,22 +274,55 @@ def auto_setup():
 
 
 # ── Tor management ─────────────────────────────────────────────────────
-def start_tor():
+def check_port(host: str, port: int, timeout: float = 2) -> bool:
+    """Check if a TCP port is open."""
+    import socket as _s
+    try:
+        s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True
+    except:
+        return False
+
+def kill_our_tor():
+    """Kill our managed Tor process if running."""
     global tor_proc
+    if tor_proc and tor_proc.poll() is None:
+        tor_proc.terminate()
+        try:
+            tor_proc.wait(timeout=5)
+        except:
+            tor_proc.kill()
+        tor_proc = None
+        time.sleep(1)
+
+def start_tor():
+    global tor_proc, tor_started_by_us
     if tor_proc and tor_proc.poll() is None:
         return True
 
-    # Check if Tor is already running (systemd or manual)
-    import socket as _sock
-    s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-    try:
-        s.settimeout(2)
-        s.connect(("127.0.0.1", 9050))
-        s.close()
-        ok("Tor já está rodando (porta 9050)")
+    # Check if OUR Tor is already running on the alternative ports
+    our_socks = check_port("127.0.0.1", SOCKS_PORT)
+    our_ctrl  = check_port("127.0.0.1", CTRL_PORT)
+
+    if our_socks and our_ctrl and tor_proc and tor_proc.poll() is None:
+        ok(f"Tor do Torify já está rodando (SOCKS5 :{SOCKS_PORT}, Control :{CTRL_PORT})")
         return True
-    except:
-        pass
+
+    # Ports in use but we don't own the process — kill and retake control
+    if our_socks or our_ctrl:
+        info("Porta ocupada. Retomando controle do Tor...")
+        for cmd in [
+            ["fuser", "-k", f"{SOCKS_PORT}/tcp"],
+            ["fuser", "-k", f"{CTRL_PORT}/tcp"],
+        ]:
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=5)
+            except:
+                pass
+        time.sleep(1)
 
     tor_bin = ensure_tor()
     if not tor_bin:
@@ -294,18 +332,20 @@ def start_tor():
     if not TORRC.exists():
         write_configs()
 
-    info("Iniciando Tor...")
+    info("Iniciando Tor (portas alternativas)...")
     try:
         tor_proc = subprocess.Popen(
             [tor_bin, "-f", str(TORRC)],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(3)
+        time.sleep(4)
         if tor_proc.poll() is not None:
             err("Tor falhou ao iniciar.")
             return False
-        ok("Tor rodando (SOCKS5 :9050)")
+        tor_started_by_us = True
+        ok(f"Tor rodando (SOCKS5 :{SOCKS_PORT}, Control :{CTRL_PORT})")
         return True
     except Exception as e:
         err(f"Erro ao iniciar Tor: {e}")
@@ -314,7 +354,7 @@ def start_tor():
 def send_newnym():
     try:
         import socket
-        s = socket.create_connection(("127.0.0.1", 9051), timeout=5)
+        s = socket.create_connection(("127.0.0.1", CTRL_PORT), timeout=5)
         s.sendall(b"AUTHENTICATE\r\n")
         s.recv(1024)
         s.sendall(b"SIGNAL NEWNYM\r\n")
@@ -328,10 +368,10 @@ def send_newnym():
 def get_ip(use_tor: bool = False, url="https://api.ipify.org") -> str:
     """Get public IP. If use_tor=True, routes through Tor SOCKS5."""
     if use_tor:
-        # curl via SOCKS5 proxy
+        # curl via SOCKS5 proxy (porta alternativa do Torify)
         for cmd in [
-            ["curl", "-s", "--max-time", "10", "--socks5", "127.0.0.1:9050", url],
-            ["curl", "-s", "--max-time", "10", "--proxy", "socks5://127.0.0.1:9050", url],
+            ["curl", "-s", "--max-time", "10", "--socks5", f"127.0.0.1:{SOCKS_PORT}", url],
+            ["curl", "-s", "--max-time", "10", "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}", url],
         ]:
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -434,7 +474,7 @@ def logo():
     os.system("clear || cls")
     c("")
     c("  ========================", color=MAGENTA, bold=True)
-    c("    Torify v1.0 — Linux", color=MAGENTA, bold=True)
+    c("    Torify v1.1 — Linux", color=MAGENTA, bold=True)
     c("  ========================", color=MAGENTA, bold=True)
     c("  Tor + torsocks for Linux", color=GRAY)
     c("  ========================", color=MAGENTA, bold=True)
@@ -454,6 +494,8 @@ def draw_menu():
     c("      Seleciona um binário/AppImage\n")
     c("  [5] Abrir App com Tor", color=CYAN)
     c("      Lista apps salvos e abre com torsocks\n")
+    c("  [00] Parar Tor", color=RED)
+    c("       Mata o Tor e restaura IP normal\n")
     c("  [0] Sair\n")
     return input("  > ").strip()
 
@@ -580,6 +622,7 @@ def option_launch_app():
         env["TORSOCKS_CONF_FILE"] = str(TORSOCKS_CONF)
         subprocess.Popen(
             [ts, app["path"]],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
@@ -588,6 +631,20 @@ def option_launch_app():
     except Exception as e:
         err(f"Erro ao iniciar: {e}")
     c("")
+
+def option_stop_tor():
+    """Kill our Tor process and restore normal IP."""
+    global tor_started_by_us
+    logo()
+    if not tor_proc or tor_proc.poll() is not None:
+        info("Tor do Torify não está rodando.\n")
+        return
+
+    info("Parando Tor do Torify...")
+    kill_our_tor()
+    tor_started_by_us = False
+    ok("Tor parado. Tráfego não passa mais pelo Torify.")
+    c("  IP real restaurado.\n", color=GRAY)
 
 def option_add_app():
     logo()
@@ -668,10 +725,11 @@ Sem argumentos: modo interativo
             option_add_app()
         elif op == "5":
             option_launch_app()
+        elif op == "00":
+            option_stop_tor()
         elif op == "0":
             c("\n  Até mais!\n", color=MAGENTA)
-            if tor_proc and tor_proc.poll() is None:
-                tor_proc.terminate()
+            kill_our_tor()
             sys.exit(0)
         else:
             err("Opção inválida.\n")
@@ -684,8 +742,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         c("\n  Até mais!\n", color=MAGENTA)
-        if tor_proc and tor_proc.poll() is None:
-            tor_proc.terminate()
+        kill_our_tor()
         sys.exit(0)
     except Exception as e:
         err(f"Erro: {e}")

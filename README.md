@@ -1,4 +1,4 @@
-# Torify v1.0 — Linux
+# Torify v1.1 — Linux
 
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 
@@ -6,66 +6,103 @@ Roteie qualquer aplicativo Linux pelo Tor com um clique.
 
 ## Como funciona
 
-- **Tor** — daemon rodando na porta SOCKS5 `127.0.0.1:9050`
+- **Tor** — daemon rodando nas portas **9052** (SOCKS5) e **9053** (Control)
 - **torsocks** — wrapper nativo do Tor que redireciona o tráfego via `LD_PRELOAD`
 - **Menu interativo** — controle tudo pelo terminal
 - **CLI** — comandos diretos sem menu
 
-## Instalação rápida
+> ⚠️ Usa portas **alternativas** (9052/9053) para não conflitar com o Tor do sistema (porta 9050).
+
+---
+
+## Índice
+
+- [Instalação](#instalação)
+  - [Binário (recomendado)](#binário-recomendado)
+  - [Código fonte](#código-fonte)
+- [Primeira execução](#primeira-execução)
+- [Guia de uso](#guia-de-uso)
+  - [Menu interativo](#menu-interativo)
+  - [CLI](#cli-command-line)
+  - [Fluxo completo](#fluxo-completo)
+  - [Opções detalhadas](#opções-detalhadas)
+- [Estrutura de arquivos](#estrutura-de-arquivos)
+- [Compatibilidade](#compatibilidade)
+
+---
+
+## Instalação
 
 ### Binário (recomendado)
 
-Baixe o binário compilado da [página de releases](https://github.com/emanueldssss/Torify-Linux/releases):
+Baixe o executável compilado da [página de releases](https://github.com/emanueldssss/Torify-Linux/releases) — não precisa de Python instalado.
 
 ```bash
-# Baixa o binário
-wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.0.0/torify-linux-x86_64 -O torify
+# 1. Baixa o binário
+wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.1.0/torify-linux-x86_64 -O torify
+
+# 2. Dá permissão de execução
 chmod +x torify
 
-# Instala TUDO (tor, torsocks, curl, wget, etc)
+# 3. Instala dependências (tor, torsocks, curl, etc)
 ./torify --install
 
-# Roda
+# 4. Executa
 ./torify
 ```
 
 ### Código fonte
 
+Requer **Python 3.6+** e `git`.
+
 ```bash
+# 1. Clona o repositório
 git clone https://github.com/emanueldssss/Torify-Linux.git
 cd Torify-Linux
+
+# 2. Dá permissão
 chmod +x torify.py
 
-# Instala TUDO (python3, tor, torsocks, curl, wget, etc)
+# 3. Instala dependências
 python3 torify.py --install
 
-# Ou apenas roda — instala automático na primeira execução
+# 4. Executa
 python3 torify.py
 ```
 
-Na primeira execução, o script instala **todas as dependências** automaticamente:
-1. **Python 3** (se não estiver instalado)
-2. **Tor** — via pacote da distro ou Expert Bundle
-3. **torsocks** — via pacote da distro
-4. **curl/wget** — para verificação de IP
-5. **zenity/xterm** — para interface opcional
+---
+
+## Primeira execução
+
+Na primeira execução, o Torify faz tudo automático:
+
+1. Detecta sua distribuição (Debian, Fedora, Arch, openSUSE, Alpine)
+2. Instala **Tor** — via pacote da distro ou Expert Bundle
+3. Instala **torsocks** — wrapper oficial do Tor Project
+4. Instala **curl/wget** — para verificação de IP
+5. Cria as configurações em `~/.config/torify/`
+6. Inicia o menu interativo
 
 > Nada de `sudo apt install` manual. O script faz tudo sozinho.
 
-## CLI (command line)
+---
+
+## Guia de uso
+
+### CLI (command line)
 
 ```bash
-python3 torify.py --install    # Instala todas as dependências e sai
-python3 torify.py --tor        # Inicia Tor e mostra o IP
-python3 torify.py --help       # Mostra ajuda
-python3 torify.py              # Modo interativo (menu)
+./torify --install        # Instala dependências e sai
+./torify --tor            # Inicia Tor e mostra IP real vs IP do Tor
+./torify --help           # Mostra ajuda
+./torify                  # Modo interativo (menu)
 ```
 
-## Menu
+### Menu interativo
 
 ```
   ========================
-Torify v1.0 — Linux
+    Torify v1.1 — Linux
   ========================
   Tor + torsocks for Linux
   ========================
@@ -73,66 +110,111 @@ Torify v1.0 — Linux
   pelo Tor com um clique.
   ========================
 
-  [1] Rodar Torify
-      Inicia Tor, rotaciona IP e mostra IP real vs Tor
+  [1]  Rodar Torify
+       Inicia Tor, rotaciona IP e mostra IP real vs Tor
 
-  [2] Conferir IP
-      Mostra IP real vs IP do Tor (com verificação real via SOCKS5)
+  [2]  Conferir IP
+       Mostra IP real vs IP do Tor (verificação real via SOCKS5)
 
-  [3] Configurar
-      Define o app padrão
+  [3]  Configurar
+       Define o caminho do app padrão
 
-  [4] Adicionar App
-      Seleciona um binário/AppImage
+  [4]  Adicionar App
+       Seleciona um binário/AppImage para salvar
 
-  [5] Abrir App com Tor
-      Lista apps salvos e abre com torsocks
+  [5]  Abrir App com Tor
+       Lista apps salvos e abre com torsocks
 
-  [0] Sair
+  [00] Parar Tor
+       Mata o Tor do Torify e restaura o IP normal
+
+  [0]  Sair
 ```
 
-### Opção 1 — Rodar Torify
+### Fluxo completo
 
-Inicia o Tor (se não estiver rodando), rotaciona o IP via `NEWNYM` e mostra:
-- Seu IP real (sem Tor)
-- Seu IP pelo Tor
+```bash
+# Instala
+wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.1.0/torify-linux-x86_64 -O torify
+chmod +x torify
+./torify --install
 
-### Opção 2 — Conferir IP
+# Roda o menu
+./torify
 
-Mostra os dois IPs lado a lado e confirma se o proxy está funcionando.
+# --- Dentro do menu ---
 
-### Opção 3 — Configurar
+# [1] Rodar Torify
+#   → Tor inicia na porta 9052
+#   → IP rotacionado (NEWNYM)
+#   → Mostra:
+#       IP real (sem Tor): 191.5.234.6
+#       IP pelo Tor:        171.25.193.38
+#   → Proxy funcionando! IPs diferentes.
 
-Define manualmente o caminho do executável que será aberto com Tor.
-- Digite o caminho completo
-- `auto` — tenta detectar automaticamente (discord, firefox, telegram, etc.)
+# [4] Adicionar App
+#   → Escolhe: digitar caminho
+#   → Digita: /usr/bin/firefox
+#   → 'firefox' adicionado!
+
+# [5] Abrir App com Tor
+#   → [1] firefox
+#   → Escolhe 1
+#   → Firefox abre roteado pelo Tor
+
+# [2] Conferir IP
+#   → Verifica se o Tor está funcionando
+
+# [00] Parar Tor
+#   → Mata o Tor
+#   → IP real restaurado
+#   → Tráfego volta ao normal
+
+# [0] Sair
+```
+
+### Opções detalhadas
+
+#### [1] Rodar Torify
+
+Inicia o Tor do Torify (porta 9052), rotaciona o IP via `SIGNAL NEWNYM` na porta de controle 9053 e mostra:
+- **IP real** — seu IP sem Tor (requisição direta via curl)
+- **IP pelo Tor** — seu IP através do Tor (requisição via `curl --socks5 127.0.0.1:9052`)
+- Se os IPs forem diferentes ✅ o proxy está funcionando
+
+#### [2] Conferir IP
+
+Mostra os dois IPs lado a lado para verificar se o Tor está ativo.
+
+#### [3] Configurar
+
+Define manualmente o executável que será aberto com Tor:
+- Digite o caminho completo (ex: `/usr/bin/firefox`)
+- `auto` — detecta automaticamente (discord, firefox, telegram, etc.)
 - `reset` — limpa a configuração
 
-### Opção 4 — Adicionar App
+#### [4] Adicionar App
 
 Adiciona um aplicativo à lista de salvos:
-- Usa `zenity` ou `kdialog` para abrir um seletor de arquivos
-- Se nenhum diálogo estiver disponível, permite digitar o caminho manualmente
-- O app fica salvo em `~/.config/torify/apps.txt`
+- Opção 1 — usa `zenity` ou `kdialog` (seletor de arquivos gráfico)
+- Opção 2 — digita o caminho manualmente
+- Fica salvo em `~/.config/torify/apps.txt`
 
-### Opção 5 — Abrir App com Tor
+#### [5] Abrir App com Tor
 
-Lista todos os apps salvos. Escolha um número e o script:
+Lista os apps salvos. Escolha um número e o Torify:
 1. Inicia o Tor (se necessário)
-2. Roda o app via `torsocks <app>`
+2. Abre o app via `torsocks <app>` com `TORSOCKS_CONF_FILE` apontando para a porta 9052
 
-## Dependências
+#### [00] Parar Tor
 
-### Gerenciamento automático
+Mata o processo do Tor gerenciado pelo Torify. O tráfego volta a sair pelo IP real imediatamente.
 
-O script instala **todas as dependências** sozinho:
-- `python3` — intérprete
-- `tor` — daemon de anonimização
-- `torsocks` — wrapper LD_PRELOAD nativo do Tor
-- `curl` / `wget` — verificação de IP
-- `zenity` / `xterm` — interface opcional
+#### [0] Sair
 
-Use `python3 torify.py --install` para instalar tudo de uma vez.
+Encerra o programa e mata o Tor do Torify (se estiver rodando).
+
+---
 
 ## Estrutura de arquivos
 
@@ -140,34 +222,27 @@ Use `python3 torify.py --install` para instalar tudo de uma vez.
 ~/.config/torify/
 ├── tor/                 # Tor Expert Bundle (se baixado automaticamente)
 │   └── tor              # binário do Tor
-├── torrc                # configuração do Tor
-├── torsocks.conf        # configuração do torsocks
+├── torrc                # configuração do Tor (portas 9052/9053)
+├── torsocks.conf        # configuração do torsocks (porta 9052)
 ├── apps.txt             # lista de apps salvos
 └── .setup-complete      # marcador de setup concluído
 ```
 
-## Exemplo de uso
+---
 
-```bash
-# 1. Instalar dependências
-python3 torify.py --install
+## Compatibilidade
 
-# 2. Rodar modo interativo
-python3 torify.py
+| Distribuição | Gerenciador | Pacotes |
+|:---|:---|:---|
+| Debian / Ubuntu | `apt` | `tor torsocks curl wget` |
+| Fedora / CentOS | `dnf` | `tor torsocks curl wget` |
+| Arch Linux | `pacman` | `tor torsocks curl wget` |
+| openSUSE | `zypper` | `tor torsocks curl wget` |
+| Alpine | `apk` | `tor torsocks curl wget` |
 
-# 3. Adicione um app (opção 4) — selecione o Discord, Firefox, etc.
+> Qualquer distribuição com Python 3.6+ e `sudo`.
 
-# 4. Abra o app com Tor (opção 5) — escolha o número do app
-```
-
-## Compatível com
-
-- **Debian/Ubuntu** — `apt`
-- **Fedora/CentOS** — `dnf`
-- **Arch Linux** — `pacman`
-- **openSUSE** — `zypper`
-- **Alpine** — `apk`
-- Qualquer distro com Python 3.6+
+---
 
 ## Licença
 
