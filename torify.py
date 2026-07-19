@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Torify — Linux
+Torify v1.0 — Linux
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 Auto-instala tudo na primeira execução.
+
+Usa torsocks (nativo Tor) em vez de proxychains.
 
 Uso:
     python3 torify.py              # Modo interativo
@@ -18,7 +20,7 @@ BASE_DIR  = Path.home() / ".config" / "torify"
 TOR_DIR   = BASE_DIR / "tor"
 APPS_FILE = BASE_DIR / "apps.txt"
 TORRC     = BASE_DIR / "torrc"
-PROXYCONF = BASE_DIR / "proxychains.conf"
+TORSOCKS_CONF = BASE_DIR / "torsocks.conf"
 MARKER    = BASE_DIR / ".setup-complete"
 VENV_DIR  = BASE_DIR / "venv"
 
@@ -64,23 +66,23 @@ def info(msg): c(f"[*] {msg}", color=CYAN)
 # ── Full system dependencies ───────────────────────────────────────────
 ALL_DEPS = {
     "debian": {
-        "pkgs": ["python3", "tor", "proxychains4", "curl", "wget", "zenity", "xterm"],
+        "pkgs": ["python3", "tor", "torsocks", "curl", "wget", "zenity", "xterm"],
         "update": ["apt-get", "update"],
     },
     "fedora": {
-        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "pkgs": ["python3", "tor", "torsocks", "curl", "wget", "zenity", "xterm"],
         "update": ["dnf", "check-update"],
     },
     "arch": {
-        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "pkgs": ["python3", "tor", "torsocks", "curl", "wget", "zenity", "xterm"],
         "update": ["pacman", "-Sy"],
     },
     "suse": {
-        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "pkgs": ["python3", "tor", "torsocks", "curl", "wget", "zenity", "xterm"],
         "update": ["zypper", "refresh"],
     },
     "alpine": {
-        "pkgs": ["python3", "tor", "proxychains-ng", "curl", "wget", "zenity", "xterm"],
+        "pkgs": ["python3", "tor", "torsocks", "curl", "wget", "zenity", "xterm"],
         "update": ["apk", "update"],
     },
 }
@@ -91,7 +93,7 @@ def install_all_deps(cmdline: bool = False) -> bool:
     deps = ALL_DEPS.get(distro)
     if not deps:
         err(f"Distro '{distro}' não suportada para instalação automática.")
-        c("  Instale manualmente: python3 tor proxychains4 curl wget", color=YELLOW)
+        c("  Instale manualmente: python3 tor torsocks curl wget", color=YELLOW)
         return False
 
     pkgs = deps["pkgs"]
@@ -208,21 +210,19 @@ def ensure_tor() -> str | None:
         err(f"Falha no download: {e}")
     return None
 
-def ensure_proxychains() -> str | None:
-    """Ensure proxychains is available, auto-install if needed."""
-    for name in ["proxychains4", "proxychains"]:
-        p = shutil.which(name)
-        if p:
-            return p
+def ensure_torsocks() -> str | None:
+    """Ensure torsocks is available, auto-install if needed."""
+    ts = shutil.which("torsocks")
+    if ts:
+        return ts
 
-    info("Proxychains não encontrado. Instalando...")
-    if install_pkgs(["proxychains4", "proxychains-ng", "proxychains"]):
-        for name in ["proxychains4", "proxychains"]:
-            p = shutil.which(name)
-            if p:
-                ok(f"Proxychains instalado: {p}")
-                return p
-    err("Proxychains não disponível.")
+    info("torsocks não encontrado. Instalando...")
+    if install_pkgs(["torsocks"]):
+        ts = shutil.which("torsocks")
+        if ts:
+            ok(f"torsocks instalado: {ts}")
+            return ts
+    err("torsocks não disponível.")
     return None
 
 def write_configs():
@@ -233,13 +233,13 @@ def write_configs():
         CookieAuthentication 0
         Log notice file /dev/null
     """).lstrip())
-    PROXYCONF.write_text(textwrap.dedent("""\
-        strict_chain
-        proxy_dns
-        tcp_read_time_out 15000
-        tcp_connect_time_out 8000
-        [ProxyList]
-        socks5 127.0.0.1 9050
+    # torsocks.conf — explícito para garantir que aponta pra porta certa
+    TORSOCKS_CONF.write_text(textwrap.dedent("""\
+        # torsocks.conf — gerado pelo Torify
+        TorAddress 127.0.0.1
+        TorPort 9050
+        OnionAddrRange 127.42.42.0/24
+        AllowOutboundLocalhost 1
     """).lstrip())
     ok("Configurações criadas em ~/.config/torify/")
 
@@ -255,16 +255,16 @@ def auto_setup():
     info("Verificando Tor...\n")
     tor_path = ensure_tor()
 
-    info("Verificando Proxychains...\n")
-    px_path = ensure_proxychains()
+    info("Verificando torsocks...\n")
+    ts_path = ensure_torsocks()
 
     write_configs()
     MARKER.write_text("setup complete")
 
     if tor_path:
         ok("Tor pronto!")
-    if px_path:
-        ok("Proxychains pronto!")
+    if ts_path:
+        ok("torsocks pronto!")
     c("")
 
 
@@ -336,12 +336,10 @@ def get_ip(url="https://api.ipify.org") -> str:
     return "?"
 
 
-# ── Proxychains ────────────────────────────────────────────────────────
-def get_proxychains_bin() -> str | None:
-    for n in ["proxychains4", "proxychains"]:
-        p = shutil.which(n)
-        if p: return p
-    return None
+# ── torsocks wrapper ───────────────────────────────────────────────────
+def get_torsocks_bin() -> str | None:
+    """Find the torsocks wrapper binary."""
+    return shutil.which("torsocks")
 
 
 # ── App management ─────────────────────────────────────────────────────
@@ -415,7 +413,10 @@ def logo():
     c("  ========================", color=MAGENTA, bold=True)
     c("    Torify v1.0 — Linux", color=MAGENTA, bold=True)
     c("  ========================", color=MAGENTA, bold=True)
-    c("  Tor + Proxychains for Linux", color=GRAY)
+    c("  Tor + torsocks for Linux", color=GRAY)
+  c("  ========================", color=MAGENTA, bold=True)
+  c("  Roteie qualquer app Linux", color=GRAY)
+  c("  pelo Tor com um clique.", color=GRAY)
     c("  ========================\n", color=MAGENTA, bold=True)
 
 def draw_menu():
@@ -427,9 +428,9 @@ def draw_menu():
     c("  [3] Configurar", color=CYAN)
     c("      Define o app padrão\n")
     c("  [4] Adicionar App", color=CYAN)
-    c("      Seleciona um .exe/.AppImage/bin\n")
+    c("      Seleciona um binário/AppImage\n")
     c("  [5] Abrir App com Tor", color=CYAN)
-    c("      Lista apps salvos e abre com proxychains\n")
+    c("      Lista apps salvos e abre com torsocks\n")
     c("  [0] Sair\n")
     return input("  > ").strip()
 
@@ -543,19 +544,22 @@ def option_launch_app():
     if not start_tor():
         return
 
-    px = get_proxychains_bin()
-    if not px:
-        err("Proxychains não encontrado.")
+    ts = get_torsocks_bin()
+    if not ts:
+        err("torsocks não encontrado.")
         return
 
     c(f"\n  [*] Abrindo '{app['name']}' com Tor...", color=CYAN)
-    c(f"      {px} -f {PROXYCONF} {app['path']}\n", color=GRAY)
+    c(f"      TORSOCKS_CONF_FILE={TORSOCKS_CONF} {ts} {app['path']}\n", color=GRAY)
 
     try:
+        env = os.environ.copy()
+        env["TORSOCKS_CONF_FILE"] = str(TORSOCKS_CONF)
         subprocess.Popen(
-            [px, "-f", str(PROXYCONF), app["path"]],
+            [ts, app["path"]],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         ok(f"'{app['name']}' iniciado com Tor!")
     except Exception as e:
