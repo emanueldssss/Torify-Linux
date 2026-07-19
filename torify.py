@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Torify v1.0 — Linux
+Torify v1.1 — Linux
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 Auto-instala tudo na primeira execução.
 
@@ -325,7 +325,30 @@ def send_newnym():
         err(f"Falha ao rotacionar IP: {e}")
         return False
 
-def get_ip(url="https://api.ipify.org") -> str:
+def get_ip(use_tor: bool = False, url="https://api.ipify.org") -> str:
+    """Get public IP. If use_tor=True, routes through Tor SOCKS5."""
+    if use_tor:
+        # curl via SOCKS5 proxy
+        for cmd in [
+            ["curl", "-s", "--max-time", "10", "--socks5", "127.0.0.1:9050", url],
+            ["curl", "-s", "--max-time", "10", "--proxy", "socks5://127.0.0.1:9050", url],
+        ]:
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout.strip()
+            except: continue
+        # fallback: torsocks wrapper
+        for base in [["curl", "-s", "--max-time", "10"],
+                     ["wget", "-qO-", "--timeout=10"]]:
+            try:
+                r = subprocess.run(["torsocks", *base, url], capture_output=True, text=True, timeout=15)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout.strip()
+            except: continue
+        return "?"
+
+    # direct (no Tor)
     for cmd in [["curl", "-s", "--max-time", "5"],
                 ["wget", "-qO-", "--timeout=5"]]:
         try:
@@ -411,7 +434,7 @@ def logo():
     os.system("clear || cls")
     c("")
     c("  ========================", color=MAGENTA, bold=True)
-    c("    Torify v1.0 — Linux", color=MAGENTA, bold=True)
+    c("    Torify v1.1 — Linux", color=MAGENTA, bold=True)
     c("  ========================", color=MAGENTA, bold=True)
     c("  Tor + torsocks for Linux", color=GRAY)
     c("  ========================", color=MAGENTA, bold=True)
@@ -447,9 +470,9 @@ def option_torify():
     time.sleep(2)
     ok("IP rotacionado!\n")
 
-    real = get_ip()
+    real = get_ip(use_tor=False)
     info(f"IP real (sem Tor): {real}")
-    tor_ip = get_ip()
+    tor_ip = get_ip(use_tor=True)
     c(f"IP pelo Tor:        {tor_ip}", color=GREEN)
 
     if real and tor_ip and real != tor_ip:
@@ -461,9 +484,9 @@ def option_torify():
 def option_check_ip():
     logo()
     info("Verificando IPs...\n")
-    real = get_ip()
+    real = get_ip(use_tor=False)
     info(f"IP real (sem Tor): {real}")
-    tor_ip = get_ip()
+    tor_ip = get_ip(use_tor=True)
     c(f"IP pelo Tor:        {tor_ip}", color=GREEN)
 
     if real and tor_ip and real != tor_ip:
@@ -588,8 +611,8 @@ def cli_tor():
     if start_tor():
         send_newnym()
         time.sleep(2)
-        real = get_ip()
-        tor_ip = get_ip()
+        real = get_ip(use_tor=False)
+        tor_ip = get_ip(use_tor=True)
         info(f"IP real: {real}")
         info(f"IP Tor:  {tor_ip}")
         sys.exit(0)
@@ -612,7 +635,7 @@ def main():
 
 Opções:
   --install, -i    Instala todas as dependências do sistema
-  --tor, -t        Inicia Tor e mostra o IP
+  --tor, -t        Inicia Tor e mostra IP real vs IP pelo Tor
   --help, -h       Mostra esta ajuda
 
 Sem argumentos: modo interativo

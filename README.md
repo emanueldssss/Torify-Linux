@@ -1,4 +1,4 @@
-# Torify v1.0 — Linux
+# Torify v1.1 — Linux
 
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 
@@ -19,7 +19,7 @@ Baixe o binário compilado da [página de releases](https://github.com/emanuelds
 
 ```bash
 # Baixa o binário
-wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.0.0/torify-linux-x86_64 -O torify
+wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.1.0/torify-linux-x86_64 -O torify
 chmod +x torify
 
 # Instala TUDO (tor, torsocks, curl, wget, etc)
@@ -65,7 +65,7 @@ python3 torify.py              # Modo interativo (menu)
 
 ```
   ========================
-    Torify v1.0 — Linux
+    Torify v1.1 — Linux
   ========================
   Tor + torsocks for Linux
   ========================
@@ -74,10 +74,10 @@ python3 torify.py              # Modo interativo (menu)
   ========================
 
   [1] Rodar Torify
-      Inicia Tor e rotaciona IP
+      Inicia Tor, rotaciona IP e mostra IP real vs Tor
 
   [2] Conferir IP
-      Mostra IP real vs IP do Tor
+      Mostra IP real vs IP do Tor (com verificação real via SOCKS5)
 
   [3] Configurar
       Define o app padrão
