@@ -13,6 +13,24 @@ Roteie qualquer aplicativo Linux pelo Tor com um clique.
 
 ## Instalação rápida
 
+### Binário (recomendado)
+
+Baixe o binário compilado da [página de releases](https://github.com/emanueldssss/Torify-Linux/releases):
+
+```bash
+# Baixa o binário
+wget https://github.com/emanueldssss/Torify-Linux/releases/download/v1.0.0/torify-linux-x86_64 -O torify
+chmod +x torify
+
+# Instala TUDO (tor, torsocks, curl, wget, etc)
+./torify --install
+
+# Roda
+./torify
+```
+
+### Código fonte
+
 ```bash
 git clone https://github.com/emanueldssss/Torify-Linux.git
 cd Torify-Linux

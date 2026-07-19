@@ -414,9 +414,9 @@ def logo():
     c("    Torify v1.0 — Linux", color=MAGENTA, bold=True)
     c("  ========================", color=MAGENTA, bold=True)
     c("  Tor + torsocks for Linux", color=GRAY)
-  c("  ========================", color=MAGENTA, bold=True)
-  c("  Roteie qualquer app Linux", color=GRAY)
-  c("  pelo Tor com um clique.", color=GRAY)
+    c("  ========================", color=MAGENTA, bold=True)
+    c("  Roteie qualquer app Linux", color=GRAY)
+    c("  pelo Tor com um clique.", color=GRAY)
     c("  ========================\n", color=MAGENTA, bold=True)
 
 def draw_menu():
