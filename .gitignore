@@ -5,3 +5,4 @@ dist/
 build/
 *.tar.gz
 screenshot.png
+*.spec
