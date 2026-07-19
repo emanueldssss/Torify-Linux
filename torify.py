@@ -287,8 +287,9 @@ def check_port(host: str, port: int, timeout: float = 2) -> bool:
         return False
 
 def kill_our_tor():
-    """Kill our managed Tor process if running."""
+    """Kill any Tor process on our ports — managed or not."""
     global tor_proc
+    # Kill managed process
     if tor_proc and tor_proc.poll() is None:
         tor_proc.terminate()
         try:
@@ -296,7 +297,15 @@ def kill_our_tor():
         except:
             tor_proc.kill()
         tor_proc = None
-        time.sleep(1)
+
+    # Kill any process occupying our ports (orphaned Tor, etc.)
+    for port in [SOCKS_PORT, CTRL_PORT]:
+        try:
+            subprocess.run(["fuser", "-k", f"{port}/tcp"],
+                         capture_output=True, timeout=5)
+        except:
+            pass
+    time.sleep(1)
 
 def start_tor():
     global tor_proc, tor_started_by_us
