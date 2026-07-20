@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Torify v1.0 — Linux
+Torify v2.0 — Linux
 Roteie qualquer aplicativo Linux pelo Tor com um clique.
 Auto-instala tudo na primeira execução.
 
@@ -13,6 +13,7 @@ Uso:
 """
 
 import os, sys, subprocess, shutil, time, json, textwrap, glob, signal, platform
+import threading, re, itertools
 from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────
@@ -22,11 +23,14 @@ APPS_FILE = BASE_DIR / "apps.txt"
 TORRC     = BASE_DIR / "torrc"
 TORSOCKS_CONF = BASE_DIR / "torsocks.conf"
 MARKER    = BASE_DIR / ".setup-complete"
+LOG_FILE  = BASE_DIR / "tor.log"
 VENV_DIR  = BASE_DIR / "venv"
 
 # Ports — usamos portas alternativas para não conflitar com Tor do sistema
 SOCKS_PORT = 9052
 CTRL_PORT  = 9053
+
+VERSION = "2.0"
 
 # ── Colours ────────────────────────────────────────────────────────────
 RED    = "\033[91m"
@@ -35,8 +39,20 @@ YELLOW = "\033[93m"
 CYAN   = "\033[96m"
 MAGENTA= "\033[95m"
 GRAY   = "\033[90m"
+WHITE  = "\033[97m"
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
+DIM    = "\033[2m"
+
+# Detecta suporte a ANSI / terminal interativo
+IS_TTY = sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb" \
+         and not os.environ.get("NO_COLOR")
+
+def _c256(n: int) -> str:
+    return f"\033[38;5;{n}m"
+
+# Paleta do gradiente: roxo Tor -> magenta -> cyan
+PALETTE = [93, 99, 135, 171, 207, 51]
 
 tor_proc: subprocess.Popen | None = None
 tor_started_by_us: bool = False  # Track if WE started Tor (vs system)
@@ -59,13 +75,145 @@ def check_platform():
 # ── Helpers ────────────────────────────────────────────────────────────
 def c(*args, color="", bold=False, sep=" "):
     text = sep.join(str(a) for a in args)
+    if not IS_TTY:
+        color = ""
+        bold = False
     if bold:   text = f"{BOLD}{text}{RESET}"
     if color:  text = f"{color}{text}{RESET}"
     print(text)
 
-def err(msg): c(f"[!] {msg}", color=RED)
-def ok(msg):  c(f"[+] {msg}", color=GREEN)
-def info(msg): c(f"[*] {msg}", color=CYAN)
+def err(msg): c(f"  {RED}✗{RESET} {msg}" if IS_TTY else f"[!] {msg}")
+def ok(msg):  c(f"  {GREEN}✓{RESET} {msg}" if IS_TTY else f"[+] {msg}")
+def info(msg): c(f"  {CYAN}➜{RESET} {msg}" if IS_TTY else f"[*] {msg}")
+def warn(msg): c(f"  {YELLOW}⚠{RESET} {msg}" if IS_TTY else f"[!] {msg}")
+
+
+# ── Animation engine ───────────────────────────────────────────────────
+def gradient_text(text: str, palette=PALETTE) -> str:
+    """Aplica gradiente de cores 256 ao texto."""
+    if not IS_TTY:
+        return text
+    out = []
+    n = len(palette)
+    for i, ch in enumerate(text):
+        color = palette[int(i / max(len(text) - 1, 1) * (n - 1))]
+        out.append(f"{_c256(color)}{ch}")
+    return "".join(out) + RESET
+
+
+def typewriter(text: str, delay: float = 0.018, color=""):
+    """Efeito de máquina de escrever."""
+    if not IS_TTY:
+        print(text)
+        return
+    for ch in text:
+        sys.stdout.write(f"{color}{ch}{RESET}" if color else ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    print()
+
+
+class Spinner:
+    """Spinner animado em thread. Uso: with Spinner('msg'): ..."""
+    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, msg: str, color=CYAN):
+        self.msg = msg
+        self.color = color
+        self._stop = threading.Event()
+        self._thread = None
+        self.active = IS_TTY
+
+    def _spin(self):
+        for frame in itertools.cycle(self.FRAMES):
+            if self._stop.is_set():
+                break
+            sys.stdout.write(f"\r  {self.color}{frame}{RESET} {self.msg}   ")
+            sys.stdout.flush()
+            time.sleep(0.07)
+        sys.stdout.write("\r" + " " * (len(self.msg) + 12) + "\r")
+        sys.stdout.flush()
+
+    def __enter__(self):
+        if self.active:
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+        else:
+            print(f"  [*] {self.msg}")
+        return self
+
+    def done(self, msg: str = None, success: bool = True):
+        """Finaliza o spinner mostrando ✓ ou ✗."""
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+        if msg:
+            if success:
+                ok(msg)
+            else:
+                err(msg)
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+        return False
+
+
+def progress_bar(percent: int, msg: str = "", width: int = 34):
+    """Desenha uma barra de progresso na linha atual."""
+    if not IS_TTY:
+        return
+    filled = int(width * percent / 100)
+    bar = "█" * filled + "░" * (width - filled)
+    bar_colored = gradient_text(bar, PALETTE)
+    sys.stdout.write(f"\r  {bar_colored} {BOLD}{percent:3d}%{RESET} {GRAY}{msg}{RESET}   ")
+    sys.stdout.flush()
+
+
+def clear_line():
+    if IS_TTY:
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+
+
+# ── Banner ─────────────────────────────────────────────────────────────
+BANNER = [
+    "████████╗ ██████╗ ██████╗ ██╗███████╗██╗   ██╗",
+    "╚══██╔══╝██╔═══██╗██╔══██╗██║██╔════╝╚██╗ ██╔╝",
+    "   ██║   ██║   ██║██████╔╝██║█████╗   ╚████╔╝ ",
+    "   ██║   ██║   ██║██╔══██╗██║██╔══╝    ╚██╔╝  ",
+    "   ██║   ╚██████╔╝██║  ██║██║██║        ██║   ",
+    "   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝        ╚═╝   ",
+]
+
+def print_banner(animated: bool = True):
+    """Banner com gradiente + animação linha a linha."""
+    if not IS_TTY:
+        for line in BANNER:
+            print(line)
+        print(f"  Torify v{VERSION} — Roteie qualquer app pelo Tor")
+        return
+    for i, line in enumerate(BANNER):
+        color = _c256(PALETTE[int(i / (len(BANNER) - 1) * (len(PALETTE) - 1))])
+        sys.stdout.write(f"  {color}{line}{RESET}\n")
+        sys.stdout.flush()
+        if animated:
+            time.sleep(0.045)
+    subtitle = f"◆ v{VERSION} — Roteie qualquer app pelo Tor com um clique ◆"
+    typewriter(f"  {gradient_text(subtitle)}", delay=0.008)
+
+
+def draw_status_bar():
+    """Barra de status do Tor no topo do menu."""
+    running = check_port("127.0.0.1", SOCKS_PORT, timeout=0.5)
+    if running:
+        dot = f"{GREEN}●{RESET}" if IS_TTY else "[ON]"
+        status = f"Tor {dot} {GRAY}SOCKS5 :{SOCKS_PORT}{RESET}"
+    else:
+        dot = f"{RED}●{RESET}" if IS_TTY else "[OFF]"
+        status = f"Tor {dot} {GRAY}parado{RESET}"
+    c(f"  {status}")
 
 
 # ── Full system dependencies ───────────────────────────────────────────
@@ -111,26 +259,26 @@ def install_all_deps(cmdline: bool = False) -> bool:
         missing.insert(0, "python3")
 
     if cmdline:
-        c(f"\n  [*] Instalando dependências para {distro}...", color=CYAN)
-        c(f"  [*] Pacotes: {', '.join(pkgs)}\n", color=GRAY)
+        info(f"Distribuição detectada: {BOLD}{distro}{RESET}")
+        info(f"Pacotes necessários: {', '.join(pkgs)}")
 
     if not missing:
         if cmdline:
             ok("Todas as dependências já estão instaladas!")
         return True
 
-    if cmdline:
-        c(f"  [*] Instalando: {', '.join(missing)}\n", color=YELLOW)
-
     # Update package lists first
     update_cmd = deps["update"]
-    run_as_root(update_cmd)
+    with Spinner("Atualizando lista de pacotes..."):
+        run_as_root(update_cmd)
 
     # Install
+    spin = Spinner(f"Instalando: {', '.join(missing)}")
+    spin.__enter__()
     success = install_pkgs(missing)
+    spin.__exit__()
     if success:
-        if cmdline:
-            ok("Todas as dependências instaladas!")
+        ok("Todas as dependências instaladas!")
         return True
     else:
         err(f"Falha ao instalar: {', '.join(missing)}")
@@ -187,22 +335,26 @@ def ensure_tor() -> str | None:
     if tor_bin:
         return tor_bin
 
-    info("Tor não encontrado. Instalando...")
+    spin = Spinner("Tor não encontrado. Instalando...")
+    spin.__enter__()
     if install_pkgs(["tor"]):
         tor_bin = shutil.which("tor")
         if tor_bin:
+            spin.__exit__()
             ok("Tor instalado!")
             return tor_bin
+    spin.__exit__()
 
     # fallback: download expert bundle
-    err("Instalação via pacote falhou. Baixando Expert Bundle...")
+    warn("Instalação via pacote falhou. Baixando Expert Bundle...")
     try:
         import urllib.request, tarfile
         arch_map = {"x86_64": "x86_64", "i686": "i686", "aarch64": "aarch64"}
         arch = arch_map.get(platform.machine(), "x86_64")
         url = f"https://www.torproject.org/dist/torbrowser/15.0.18/tor-expert-bundle-linux-{arch}-15.0.18.tar.gz"
         dest = BASE_DIR / "tor-dl.tar.gz"
-        urllib.request.urlretrieve(url, dest)
+        with Spinner("Baixando Tor Expert Bundle..."):
+            urllib.request.urlretrieve(url, dest)
         with tarfile.open(dest) as tf:
             tf.extractall(path=TOR_DIR)
         dest.unlink()
@@ -221,12 +373,15 @@ def ensure_torsocks() -> str | None:
     if ts:
         return ts
 
-    info("torsocks não encontrado. Instalando...")
+    spin = Spinner("torsocks não encontrado. Instalando...")
+    spin.__enter__()
     if install_pkgs(["torsocks"]):
         ts = shutil.which("torsocks")
         if ts:
+            spin.__exit__()
             ok(f"torsocks instalado: {ts}")
             return ts
+    spin.__exit__()
     err("torsocks não disponível.")
     return None
 
@@ -236,7 +391,7 @@ def write_configs():
         SocksPort {SOCKS_PORT}
         ControlPort {CTRL_PORT}
         CookieAuthentication 0
-        Log notice file /dev/null
+        Log notice file {LOG_FILE}
     """).lstrip())
     # torsocks.conf — aponta pro Tor do Torify (porta alternativa)
     TORSOCKS_CONF.write_text(textwrap.dedent(f"""\
@@ -250,27 +405,30 @@ def write_configs():
 
 def auto_setup():
     """Auto-install everything on first run."""
-    c("\n  ========================", color=MAGENTA, bold=True)
-    c("    Primeira Execução", color=MAGENTA, bold=True)
-    c("  ========================\n", color=MAGENTA, bold=True)
+    if IS_TTY:
+        os.system("clear")
+    print_banner(animated=True)
+    c("")
+    c(f"  {gradient_text('─' * 46)}")
+    c(f"  {BOLD}{MAGENTA}PRIMEIRA EXECUÇÃO — SETUP AUTOMÁTICO{RESET}" if IS_TTY else "PRIMEIRA EXECUÇÃO — SETUP AUTOMÁTICO")
+    c(f"  {gradient_text('─' * 46)}")
+    c("")
 
-    info("Verificando dependências do sistema...\n")
     install_all_deps(cmdline=False)
 
-    info("Verificando Tor...\n")
     tor_path = ensure_tor()
-
-    info("Verificando torsocks...\n")
     ts_path = ensure_torsocks()
 
     write_configs()
     MARKER.write_text("setup complete")
 
+    c("")
     if tor_path:
         ok("Tor pronto!")
     if ts_path:
         ok("torsocks pronto!")
     c("")
+    time.sleep(0.6)
 
 
 # ── Tor management ─────────────────────────────────────────────────────
@@ -307,7 +465,55 @@ def kill_our_tor():
             pass
     time.sleep(1)
 
-def start_tor():
+def _parse_bootstrap_progress() -> int:
+    """Lê o log do Tor e extrai a porcentagem de bootstrap."""
+    try:
+        if not LOG_FILE.exists():
+            return 0
+        content = LOG_FILE.read_text(errors="ignore")
+        matches = re.findall(r"Bootstrapped (\d+)%", content)
+        if matches:
+            return int(matches[-1])
+    except:
+        pass
+    return 0
+
+def _wait_bootstrap(timeout: int = 90) -> bool:
+    """Barra de progresso animada acompanhando o bootstrap real do Tor."""
+    start = time.time()
+    last = -1
+    phases = [
+        (0,   "conectando na rede Tor..."),
+        (10,  "negociando com relays..."),
+        (30,  "baixando consenso da rede..."),
+        (50,  "construindo circuitos..."),
+        (80,  "estabelecendo circuito..."),
+        (95,  "finalizando..."),
+        (100, "pronto!"),
+    ]
+    while time.time() - start < timeout:
+        pct = _parse_bootstrap_progress()
+        if pct != last:
+            last = pct
+            msg = next((m for lim, m in reversed(phases) if pct >= lim), "")
+            if IS_TTY:
+                progress_bar(pct, msg)
+            time.sleep(0.15)
+        else:
+            time.sleep(0.25)
+        if pct >= 100:
+            if IS_TTY:
+                progress_bar(100, "pronto!")
+                print()
+            return True
+        # Process died?
+        if tor_proc and tor_proc.poll() is not None:
+            clear_line()
+            return False
+    clear_line()
+    return False
+
+def start_tor(quiet: bool = False) -> bool:
     global tor_proc, tor_started_by_us
     if tor_proc and tor_proc.poll() is None:
         return True
@@ -317,7 +523,8 @@ def start_tor():
     our_ctrl  = check_port("127.0.0.1", CTRL_PORT)
 
     if our_socks and our_ctrl and tor_proc and tor_proc.poll() is None:
-        ok(f"Tor do Torify já está rodando (SOCKS5 :{SOCKS_PORT}, Control :{CTRL_PORT})")
+        if not quiet:
+            ok(f"Tor do Torify já está rodando (SOCKS5 :{SOCKS_PORT}, Control :{CTRL_PORT})")
         return True
 
     # Ports in use but we don't own the process — kill and retake control
@@ -341,7 +548,13 @@ def start_tor():
     if not TORRC.exists():
         write_configs()
 
-    info("Iniciando Tor (portas alternativas)...")
+    # Limpa log antigo para o bootstrap começar do zero
+    try:
+        LOG_FILE.unlink(missing_ok=True)
+    except:
+        pass
+
+    info(f"Iniciando Tor {GRAY}(SOCKS5 :{SOCKS_PORT} · Control :{CTRL_PORT}){RESET}" if IS_TTY else "Iniciando Tor...")
     try:
         tor_proc = subprocess.Popen(
             [tor_bin, "-f", str(TORRC)],
@@ -349,26 +562,34 @@ def start_tor():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(4)
-        if tor_proc.poll() is not None:
-            err("Tor falhou ao iniciar.")
+        if not _wait_bootstrap():
+            err("Tor falhou ao iniciar (timeout no bootstrap).")
             return False
         tor_started_by_us = True
-        ok(f"Tor rodando (SOCKS5 :{SOCKS_PORT}, Control :{CTRL_PORT})")
+        ok(f"Tor conectado {GRAY}— circuito estabelecido{RESET}" if IS_TTY else "Tor conectado!")
         return True
     except Exception as e:
         err(f"Erro ao iniciar Tor: {e}")
         return False
 
-def send_newnym():
+def send_newnym(animated: bool = True) -> bool:
     try:
         import socket
-        s = socket.create_connection(("127.0.0.1", CTRL_PORT), timeout=5)
-        s.sendall(b"AUTHENTICATE\r\n")
-        s.recv(1024)
-        s.sendall(b"SIGNAL NEWNYM\r\n")
-        s.recv(1024)
-        s.close()
+
+        def _do():
+            s = socket.create_connection(("127.0.0.1", CTRL_PORT), timeout=5)
+            s.sendall(b"AUTHENTICATE\r\n")
+            s.recv(1024)
+            s.sendall(b"SIGNAL NEWNYM\r\n")
+            s.recv(1024)
+            s.close()
+
+        if animated and IS_TTY:
+            with Spinner("Rotacionando circuito (NEWNYM)..."):
+                _do()
+                time.sleep(1.5)
+        else:
+            _do()
         return True
     except Exception as e:
         err(f"Falha ao rotacionar IP: {e}")
@@ -444,11 +665,13 @@ def find_target_app() -> str | None:
 
 def add_app_interactive():
     apps = load_apps()
-    c("\n  Como adicionar o app?", color=CYAN)
-    c("  1) Selecionar com janela (zenity/kdialog)")
-    c("  2) Digitar o caminho manualmente")
-    c("  0) Voltar\n")
-    choice = input("  > ").strip()
+    section("Adicionar App")
+    c("  Como adicionar o app?", color=CYAN)
+    c(f"  {MAGENTA}[1]{RESET} Selecionar com janela (zenity/kdialog)" if IS_TTY else "  [1] Selecionar com janela (zenity/kdialog)")
+    c(f"  {MAGENTA}[2]{RESET} Digitar o caminho manualmente" if IS_TTY else "  [2] Digitar o caminho manualmente")
+    c(f"  {GRAY}[0] Voltar{RESET}")
+    c("")
+    choice = input(f"  {BOLD}❯{RESET} " if IS_TTY else "  > ").strip()
 
     path = None
     if choice == "1":
@@ -465,7 +688,7 @@ def add_app_interactive():
             return
     elif choice == "2":
         c("  Digite o caminho completo do executável:", color=GRAY)
-        path = input("  > ").strip()
+        path = input(f"  {BOLD}❯{RESET} " if IS_TTY else "  > ").strip()
         if not os.path.isfile(path):
             err("Arquivo não encontrado.")
             return
@@ -479,94 +702,145 @@ def add_app_interactive():
 
 
 # ── UI ─────────────────────────────────────────────────────────────────
-def logo():
-    os.system("clear || cls")
+def section(title: str):
+    """Título de seção estilizado."""
     c("")
-    c("  ========================", color=MAGENTA, bold=True)
-    c("    Torify v1.0 — Linux", color=MAGENTA, bold=True)
-    c("  ========================", color=MAGENTA, bold=True)
-    c("  Tor + torsocks for Linux", color=GRAY)
-    c("  ========================", color=MAGENTA, bold=True)
-    c("  Roteie qualquer app Linux", color=GRAY)
-    c("  pelo Tor com um clique.", color=GRAY)
-    c("  ========================\n", color=MAGENTA, bold=True)
+    if IS_TTY:
+        c(f"  {gradient_text('── ' + title.upper() + ' ' + '─' * max(40 - len(title), 0))}")
+    else:
+        c(f"  == {title} ==")
+    c("")
+
+def logo(animated: bool = False):
+    if IS_TTY:
+        os.system("clear")
+    print_banner(animated=animated)
+    c("")
+    draw_status_bar()
+    c("")
+
+def menu_item(key: str, title: str, desc: str, color=CYAN):
+    if IS_TTY:
+        c(f"  {MAGENTA}{BOLD}[{key}]{RESET} {BOLD}{WHITE}{title}{RESET}")
+        c(f"       {GRAY}{desc}{RESET}")
+    else:
+        c(f"  [{key}] {title} — {desc}")
 
 def draw_menu():
     logo()
-    c("  [1] Rodar Torify", color=CYAN)
-    c("      Inicia Tor e rotaciona IP\n")
-    c("  [2] Conferir IP", color=CYAN)
-    c("      Mostra IP real vs IP do Tor\n")
-    c("  [3] Configurar", color=CYAN)
-    c("      Define o app padrão\n")
-    c("  [4] Adicionar App", color=CYAN)
-    c("      Seleciona um binário/AppImage\n")
-    c("  [5] Abrir App com Tor", color=CYAN)
-    c("      Lista apps salvos e abre com torsocks\n")
-    c("  [00] Parar Tor", color=RED)
-    c("       Mata o Tor e restaura IP normal\n")
-    c("  [0] Sair\n")
-    return input("  > ").strip()
+    if IS_TTY:
+        c(f"  {gradient_text('╭' + '─' * 44 + '╮')}")
+        c(f"  {gradient_text('│')}{BOLD}              M E N U                   {RESET}{gradient_text('│')}")
+        c(f"  {gradient_text('╰' + '─' * 44 + '╯')}")
+    c("")
+    menu_item("1", "Rodar Torify", "Inicia Tor, rotaciona IP e verifica")
+    menu_item("2", "Conferir IP", "Mostra IP real vs IP do Tor")
+    menu_item("3", "Configurar", "Define o app padrão")
+    menu_item("4", "Adicionar App", "Seleciona um binário/AppImage")
+    menu_item("5", "Abrir App com Tor", "Lista apps salvos e abre com torsocks")
+    menu_item("00", "Parar Tor", "Mata o Tor e restaura IP normal", color=RED)
+    menu_item("0", "Sair", "Encerra o Torify")
+    c("")
+    return input(f"  {BOLD}{gradient_text('torify')} {MAGENTA}❯{RESET} " if IS_TTY else "  > ").strip()
+
+
+# ── IP comparison panel ────────────────────────────────────────────────
+def show_ip_panel(real: str, tor_ip: str):
+    """Painel lado a lado com os IPs, estilizado."""
+    if IS_TTY:
+        line = gradient_text('─' * 46)
+        c(f"  {line}")
+        c(f"  {GRAY}IP real (sem Tor){RESET}   {BOLD}{YELLOW}{real}{RESET}")
+        c(f"  {GRAY}IP pelo Tor      {RESET}   {BOLD}{GREEN}{tor_ip}{RESET}")
+        c(f"  {line}")
+    else:
+        c(f"  IP real (sem Tor): {real}")
+        c(f"  IP pelo Tor:       {tor_ip}")
 
 
 # ── Options ────────────────────────────────────────────────────────────
 def option_torify():
     logo()
-    info("Iniciando Torify...\n")
+    section("Rodar Torify")
     if not start_tor():
-        input("  Pressione Enter para continuar...")
+        input(f"\n  {GRAY}Pressione Enter para continuar...{RESET}" if IS_TTY else "  Pressione Enter...")
         return
-    info("Rotacionando IP...")
     send_newnym()
-    time.sleep(2)
-    ok("IP rotacionado!\n")
+    time.sleep(1)
+    ok("IP rotacionado!")
+    c("")
 
+    spin = Spinner("Verificando IPs (real vs Tor)...")
+    spin.__enter__()
     real = get_ip(use_tor=False)
-    info(f"IP real (sem Tor): {real}")
     tor_ip = get_ip(use_tor=True)
-    c(f"IP pelo Tor:        {tor_ip}", color=GREEN)
+    spin.__exit__()
 
-    if real and tor_ip and real != tor_ip:
-        c("\n  [+] Proxy funcionando! IPs diferentes.", color=GREEN)
-    elif real and tor_ip:
-        c("\n  [!] IPs iguais — verifique se o Tor está rodando.", color=YELLOW)
+    show_ip_panel(real, tor_ip)
+    c("")
+
+    if real and tor_ip and real != tor_ip and real != "?" and tor_ip != "?":
+        ok("Proxy funcionando! IPs diferentes — você está anônimo.")
+    elif real and tor_ip and real == tor_ip:
+        warn("IPs iguais — verifique se o Tor está rodando.")
+    else:
+        warn("Não foi possível verificar (sem conexão?).")
     c("")
 
 def option_check_ip():
     logo()
-    info("Verificando IPs...\n")
+    section("Conferir IP")
+    spin = Spinner("Consultando IP real...")
+    spin.__enter__()
     real = get_ip(use_tor=False)
-    info(f"IP real (sem Tor): {real}")
-    tor_ip = get_ip(use_tor=True)
-    c(f"IP pelo Tor:        {tor_ip}", color=GREEN)
+    spin.__exit__()
 
-    if real and tor_ip and real != tor_ip:
-        ok("Tor está funcionando!")
-    elif real and tor_ip:
-        err("Tor NÃO está roteando o tráfego.")
+    tor_running = check_port("127.0.0.1", SOCKS_PORT, timeout=0.5)
+    if tor_running:
+        spin = Spinner("Consultando IP via Tor (SOCKS5)...")
+        spin.__enter__()
+        tor_ip = get_ip(use_tor=True)
+        spin.__exit__()
     else:
-        err("Não foi possível verificar os IPs.")
+        tor_ip = "Tor parado"
+        warn("Tor não está rodando — use a opção [1] primeiro.")
+
+    c("")
+    show_ip_panel(real, tor_ip)
+    c("")
+
+    if tor_running:
+        if real and tor_ip and real != tor_ip and tor_ip != "?":
+            ok("Tor está funcionando!")
+        elif real and tor_ip and real == tor_ip:
+            err("Tor NÃO está roteando o tráfego.")
+        else:
+            err("Não foi possível verificar os IPs.")
     c("")
 
 def option_config():
     logo()
+    section("Configurar")
     apps = load_apps()
     auto = find_target_app()
-    c("  Configuração do app padrão\n", color=CYAN)
     if auto:
-        c(f"  Detectado automaticamente: {auto}", color=GRAY)
+        c(f"  {GRAY}Detectado automaticamente:{RESET} {GREEN}{auto}{RESET}" if IS_TTY else f"  Detectado: {auto}")
     elif apps:
-        c(f"  Último app configurado: {apps[-1]['path']}", color=GRAY)
+        c(f"  {GRAY}Último app configurado:{RESET} {GREEN}{apps[-1]['path']}{RESET}" if IS_TTY else f"  Último: {apps[-1]['path']}")
     else:
         c("  Nenhum caminho configurado.", color=GRAY)
+    c("")
     c("  Digite o caminho completo do executável")
-    c("  (Enter para manter, 'auto' para detectar, 'reset' para limpar):\n", color=GRAY)
-    path = input("  > ").strip()
+    c("  (Enter para manter, 'auto' para detectar, 'reset' para limpar):", color=GRAY)
+    c("")
+    path = input(f"  {BOLD}❯{RESET} " if IS_TTY else "  > ").strip()
 
     if path == "":
         return
     elif path.lower() == "auto":
-        found = find_target_app()
+        with Spinner("Detectando apps instalados..."):
+            time.sleep(0.8)
+            found = find_target_app()
         if found:
             save_apps([{"name": os.path.basename(found), "path": found}])
             ok(f"Configurado: {found}")
@@ -587,17 +861,22 @@ def option_config():
 def option_launch_app():
     apps = load_apps()
     if not apps:
+        logo()
         err("Nenhum app configurado. Use a opção 4 primeiro.")
         return
 
     logo()
-    c("  Apps salvos:\n", color=CYAN)
+    section("Abrir App com Tor")
     for i, app in enumerate(apps, 1):
-        c(f"  [{i}] {app['name']}", color=GREEN)
-        c(f"      {app['path']}", color=GRAY)
+        if IS_TTY:
+            c(f"  {MAGENTA}{BOLD}[{i}]{RESET} {BOLD}{app['name']}{RESET}")
+            c(f"      {GRAY}{app['path']}{RESET}")
+        else:
+            c(f"  [{i}] {app['name']} — {app['path']}")
 
-    c("\n  [0] Voltar\n", color=GRAY)
-    choice = input("  > ").strip()
+    c(f"\n  {GRAY}[0] Voltar{RESET}")
+    c("")
+    choice = input(f"  {BOLD}❯{RESET} " if IS_TTY else "  > ").strip()
     if choice == "0" or choice == "":
         return
 
@@ -623,8 +902,10 @@ def option_launch_app():
         err("torsocks não encontrado.")
         return
 
-    c(f"\n  [*] Abrindo '{app['name']}' com Tor...", color=CYAN)
-    c(f"      TORSOCKS_CONF_FILE={TORSOCKS_CONF} {ts} {app['path']}\n", color=GRAY)
+    c("")
+    info(f"Abrindo '{app['name']}' com Tor...")
+    c(f"      {GRAY}TORSOCKS_CONF_FILE={TORSOCKS_CONF} {ts} {app['path']}{RESET}" if IS_TTY else f"  torsocks {app['path']}")
+    c("")
 
     try:
         env = os.environ.copy()
@@ -645,15 +926,19 @@ def option_stop_tor():
     """Kill our Tor process and restore normal IP."""
     global tor_started_by_us
     logo()
+    section("Parar Tor")
     if not tor_proc or tor_proc.poll() is not None:
-        info("Tor do Torify não está rodando.\n")
+        info("Tor do Torify não está rodando.")
+        c("")
         return
 
-    info("Parando Tor do Torify...")
-    kill_our_tor()
+    with Spinner("Parando Tor do Torify..."):
+        kill_our_tor()
+        time.sleep(0.5)
     tor_started_by_us = False
     ok("Tor parado. Tráfego não passa mais pelo Torify.")
-    c("  IP real restaurado.\n", color=GRAY)
+    c("  IP real restaurado.", color=GRAY)
+    c("")
 
 def option_add_app():
     logo()
@@ -663,27 +948,44 @@ def option_add_app():
 # ── CLI ────────────────────────────────────────────────────────────────
 def cli_install():
     """Install all dependencies and exit."""
-    c("\n  ========================", color=MAGENTA, bold=True)
-    c("    Instalação completa", color=MAGENTA, bold=True)
-    c("  ========================\n", color=MAGENTA, bold=True)
-    ok = install_all_deps(cmdline=True)
-    sys.exit(0 if ok else 1)
+    print_banner(animated=True)
+    c("")
+    section("Instalação completa")
+    result = install_all_deps(cmdline=True)
+    c("")
+    sys.exit(0 if result else 1)
 
 def cli_tor():
     """Start Tor, show IP, and exit."""
     BASE_DIR.mkdir(parents=True, exist_ok=True)
+    print_banner(animated=False)
+    c("")
     if not MARKER.exists():
         auto_setup()
     if start_tor():
         send_newnym()
-        time.sleep(2)
+        time.sleep(1)
+        spin = Spinner("Verificando IPs...")
+        spin.__enter__()
         real = get_ip(use_tor=False)
         tor_ip = get_ip(use_tor=True)
-        info(f"IP real: {real}")
-        info(f"IP Tor:  {tor_ip}")
+        spin.__exit__()
+        show_ip_panel(real, tor_ip)
+        c("")
         sys.exit(0)
     sys.exit(1)
 
+
+HELP_TEXT = """
+Uso: torify [OPÇÃO]
+
+Opções:
+  --install, -i    Instala todas as dependências do sistema
+  --tor, -t        Inicia Tor e mostra IP real vs IP pelo Tor
+  --help, -h       Mostra esta ajuda
+
+Sem argumentos: modo interativo (menu animado)
+"""
 
 # ── Main ───────────────────────────────────────────────────────────────
 def main():
@@ -697,15 +999,8 @@ def main():
         elif arg in ("--tor", "-t"):
             cli_tor()
         elif arg in ("--help", "-h"):
-            c("""Uso: python3 torify.py [OPÇÃO]
-
-Opções:
-  --install, -i    Instala todas as dependências do sistema
-  --tor, -t        Inicia Tor e mostra IP real vs IP pelo Tor
-  --help, -h       Mostra esta ajuda
-
-Sem argumentos: modo interativo
-""")
+            print_banner(animated=False)
+            c(HELP_TEXT)
             sys.exit(0)
         else:
             err(f"Argumento desconhecido: {arg}")
@@ -737,20 +1032,26 @@ Sem argumentos: modo interativo
         elif op == "00":
             option_stop_tor()
         elif op == "0":
-            c("\n  Até mais!\n", color=MAGENTA)
+            c("")
+            typewriter(gradient_text("  Até mais! Fique anônimo. ◆") if IS_TTY else "  Até mais!", delay=0.02)
+            c("")
             kill_our_tor()
             sys.exit(0)
         else:
-            err("Opção inválida.\n")
+            err("Opção inválida.")
+            time.sleep(0.8)
+            continue
 
-        input("  Pressione Enter para continuar...")
+        input(f"  {GRAY}Pressione Enter para continuar...{RESET}" if IS_TTY else "  Pressione Enter...")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        c("\n  Até mais!\n", color=MAGENTA)
+        c("")
+        c(gradient_text("  Até mais! Fique anônimo. ◆") if IS_TTY else "  Até mais!")
+        c("")
         kill_our_tor()
         sys.exit(0)
     except Exception as e:
